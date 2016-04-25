@@ -1,0 +1,93 @@
+#!/bin/sh
+# Будет запущен скрипт вместо основной перезагрузки/выключения
+# чтобы безопасно переключится в корень initrd и отмонтировать все что возможно.
+# В основном нужен если используется changes= параметр загрузки чтобы корректно
+# отмонтировать файл/папку с изменениями.
+
+export PATH=.:/mnt/live:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Этот скрипт нужно перезапускать для освобождения любого шелла
+# от используемого union (/union/bin/bash)
+if [ ! "$RE_EXEC_CLEANUP" ]; then
+   export RE_EXEC_CLEANUP=1
+   pivot_root . union
+   exec chroot . /cleanup "$@" <dev/console >dev/console 2>&1
+   echo "Что-то пошло не так, потому что нас не должно быть здесь!"
+fi
+
+# Отправка сигнала завершения(TERM) процессам которые можно убить:
+PID=`ps | sed -n '/PID/,/{cleanup}/p' | egrep -v "\[.*\]" | egrep -v 'PID|cleanup|mount.ntfs' | sed -r "s/^ *([0-9]+).*/\\1/" | tr "\n" " "`
+kill -SIGTERM `echo $PID` >/dev/null 2>&1
+
+# Потребуется cryptsetup чтобы закрыть зашифрованый контейнер:
+[ -b /dev/mapper/crypt ] && cp /memory/images/000-kernel.pfs/sbin/cryptsetup /bin
+
+# Определение загрузились ли мы с CD и копирование утилиты 'eject':
+CD=`grep /dev/sr /proc/mounts | cut -d" " -f1 | uniq`
+[ -b "$CD" ] && cp -f /union/usr/bin/eject /bin
+
+# Удаление задвоенных вхождений монтирования ntfs из mtab:
+sed -i "/ fuseblk /d" /etc/mtab
+
+if [ -e /tmp/changes-exit ]; then
+    echo -e "Ваша сессия будет сохранена через [1;33m3[0m секунд.\nНажмите пробел/enter чтобы начать сейчас или другую клавишу для пропуска."; x=3
+    while [ $x -gt 0 ]; do read -s -t1 -n1 ans && break || sleep 1; let x=x-1; done
+    if [ "$ans" = "" ]; then
+	DEST=`cat /tmp/changes-exit`; NAME=`basename $DEST`; MNAME=/memory/images/changes; FOLDERS=`grep '^/' /union/etc/changes_exit.conf | sed s/^.//g`
+	echo "сохранение изменений в $NAME - не выключайте компьютер"
+	cd /memory/changes; rm -rf var/lock/subsys/* var/run/laptop-mode-tools/* `grep '^!' /union/etc/changes_exit.conf | sed s/^..//g | tr "\n" " "`
+	for x in `find $FOLDERS -name ".wh.*" 2>/dev/null | sed s/.wh.//g`; do test -e $MNAME/$x && rm -rf $MNAME/$x; done
+	for x in `find $MNAME -name ".wh.*" 2>/dev/null`; do wh=`echo $x | sed -e s^$MNAME^^g -e s/.wh.//g`; test -e $wh && rm $x; done
+	cp -a $FOLDERS $MNAME 2>/dev/null
+    fi
+elif ! grep -q memory /var/log/livedbg; then
+    sleep 2
+fi
+
+# SIGKILL:
+kill -SIGKILL `echo $PID` >/dev/null 2>&1
+sync
+
+echo "размонтирование union"
+umount -nl `grep /union/ /proc/mounts | cut -d" " -f2 | tr "\n" " "` 2>/dev/null
+umount /union 2>/dev/null
+if [ $? -ne 0 ]; then
+    x=9; free=no
+    while [ $x -gt 0 -a $free = no ]; do
+	usleep 300000; sync; let x=x-1
+	umount /union 2>/dev/null && { echo "union размонтировано"; free=yes; }
+    done
+    if [ $? -ne 0 ]; then
+	echo "перемонтирование union в read-only"
+	echo -e "пожалуйста используйте '[1;33mfsck[0m' cheatcode при следующей загрузке\nчтобы удостовериться что все ваши файловые системы !!!consistent"
+	sleep 3; umount -r /union 2>/dev/null
+    fi
+fi
+
+echo "отмонтирование всего прочего"
+umount -a 2>/dev/null
+if [ $? -ne 0 ]; then
+    # Закрыть зашифрованный контейнер:
+    if [ -b /dev/mapper/crypt ]; then
+        cryptsetup luksClose crypt
+        losetup -d /dev/loop2
+    fi
+    umount -ar 2>/dev/null
+fi
+
+# Извлечь cdrom привод:
+if [ -z "`egrep -o " noeject( |\$)" /proc/cmdline`" -a -b "$CD" ]; then
+    echo "Уберите $CD..."; eject $CD 2>/dev/null; x=6
+    while [ $x -gt 0 ]; do
+	echo -en "Лоток CD закроется через [1;33m$x[0m секунд - нажмите enter чтобы сделать это сейчас.\r"
+	read -s -t1 && break || sleep 1
+	let x=x-1
+    done
+    eject -t $CD 2>/dev/null
+fi
+
+# $1 = action, eg. poweroff or reboot:
+if [ "$1" = "" ]; then reboot -f; fi
+if [ "$1" = "halt" ]; then poweroff -f; else $1 -f; fi
+
+echo "Что-то пошло не так, потому что нас не должно быть здесь!"
