@@ -1,0 +1,671 @@
+#!/bin/sh
+### linuxc скрипт от fanthom <http://www.porteus.org>
+v=160221 #sfs
+cat /lib/consolefonts/ter-u16n.psf | loadfont  #подключение русифицированого консольного шрифта.
+#XXX consolechars --font=/lib/consolefonts/ter-u16n.psf #| loadfont  #подключение русифицированого консольного шрифта.
+
+export PATH=/bin:/usr/bin:./
+
+# Включить pivot_root в initramfs чтобы он вел себя как initrd:
+if [ -d /m ]; then
+    mount -nt tmpfs tmpfs -o mode=0755 /m
+    cp -a ??* /m 2>/dev/null
+    exec switch_root /m linuxrc "$@"
+fi
+
+mount -nt proc proc /proc
+mount -nt sysfs sysfs /sys
+echo 0 >/proc/sys/kernel/printk
+
+clear
+#echo "[1m""Старт скрипта инициализации <http://www.porteus.org/>""[0m"
+echo "[1m""PRA-Porteus initrd v.$v""[0m"
+echo "[1m"==========================="[0m"
+
+# Функции:
+param() { egrep -qo " $1( |\$)" /proc/cmdline; }
+#value() { egrep -o " $1=[^ ]+" /proc/cmdline | cut -d= -f2; }
+#value() { echo " `cat /proc/cmdline`" |egrep -o " $1=[^ ]+" | cut -d= -f2; }
+value() { egrep -o "(^| )$1=[^ ]+" /proc/cmdline | cut -d= -f2; } #sfs
+#debug() { param debug && { echo -e "\n=====\n: Режим отладки. Командная строка доступна для ввода команд.\n: Для продолжения загрузки нажмите Ctrl+D. Для перезагрузки: Ctrl+Alt+Del."; sh; echo -e "\n\n"; }; }
+debug() { param debug && { echo -e "\n=====\n: Режим отладки. Командная строка доступна для ввода команд.\n: Для продолжения загрузки нажмите Ctrl+D. Для перезагрузки: Ctrl+Alt+Del."; sh 2>/dev/null ; echo -e "\n\n"; }; } ###sfs
+stop() { param stop  && { echo -e "\n=====\n: Режим отладки. Командная строка доступна для ввода команд.\n: Для продолжения загрузки нажмите Ctrl+D. Для перезагрузки: Ctrl+Alt+Del."; sh 2>/dev/null ; echo -e "\n\n"; }; } ###sfs
+#debug() { param debug && { echo -e "\n=====\n: Режим отладки. Командная строка доступна для ввода команд.\n: Для продолжения загрузки нажмите Ctrl+D. Для перезагрузки: Ctrl+Alt+Del."; exec setsid sh -c 'exec sh </dev/tty1 >/dev/tty1 2>&1'; echo -e "\n\n"; }; }
+
+# Переменные:
+[ `value xzm` ] && xzm=xzm || xzm="[xp][zf][ms]" #pfs ###sfs
+i=`echo "[1;33m""^ ""[0m"`
+m=`echo "[1;33m""->""[0m"`
+DELAY=`value delay`; [ $DELAY ] && { echo $i"Ожидаем $DELAY секунд инициализацию медленных устройств"; sleep $DELAY; }
+###SGN=`value sgnfile`; [ $SGN ] || SGN=porteus-v2.0-i486.sgn
+SGN=`value sgnfile`; [ $SGN ] || SGN=initrd.xz
+FROM=`value from`; ISO=`echo $FROM | egrep ".*\.iso( |\$)"`
+IP=`value ip | cut -d: -f2`
+MOPT=`value mopt`; [ $MOPT ] || MOPT="noatime,nodiratime,suid,dev,exec,async"
+CHANGES=`value changes`
+RAMSIZE=`value ramsize`; [ $RAMSIZE ] || RAMSIZE=60%
+LOAD=`value load | sed 's/;/|/g'`; [ $LOAD ] || LOAD=._null
+NOLOAD=`value noload | sed 's/;/|/g'`; [ $NOLOAD ] || NOLOAD=._null
+EXTRAMOD=`value extramod | sed 's/;/ /g'`
+RAMMOD=`value rammod | sed 's/;/|/g'`
+ROOTCOPY=`value rootcopy`
+###FOLDER=porteus
+FOLDER="`value dir`" || FOLDER=pra ###sfs
+livedbg=/var/log/livedbg
+
+# Функции устройства:
+fstab() { rm -f /tmp/devices
+param nocd || for x in /dev/sr*; do blkid $x >>/tmp/devices; done
+param nohd || blkid | egrep -v '/dev/sr|/dev/loop|/dev/mapper' >>/tmp/devices
+dev=`egrep -v 'TYPE="sw|TYPE="LVM|TYPE="linux_raid' /tmp/devices 2>/dev/null | cut -d: -f1 | cut -d/ -f3 | sort | uniq`
+cat > /etc/fstab << EOF
+# Не редактируйте этот файл так как fstab пересоздается автоматически во время каждой загрузки.
+# Используйте скрипты /etc/rc.d/rc.local или sysvinit если хотите при/размонтировать диск,
+# filesystem or network share.
+
+# точки монтирования системы:
+aufs / aufs defaults 0 0
+proc /proc proc defaults 0 0
+sysfs /sys sysfs defaults 0 0
+devtmpfs /dev devtmpfs defaults 0 0
+devpts /dev/pts devpts rw,mode=0620,gid=5 0 0
+
+# разделы устройства:
+EOF
+for x in $dev; do
+    fs=`grep -w /dev/$x /tmp/devices | egrep -o ' TYPE=[^ ]+' | cut -d'"' -f2`
+    #[ $fs = vfat ] && echo "/dev/$x /mnt/$x $fs $MOPT,umask=0,check=s,utf8 0 0" >>/etc/fstab || echo "/dev/$x /mnt/$x $fs $MOPT 0 0" >>/etc/fstab
+    [ $fs = vfat ] && echo "/dev/$x /mnt/$x $fs $MOPT,umask=0,check=s,utf8=true,quiet,codepage=866,iocharset=utf8 0 0" >>/etc/fstab || echo "/dev/$x /mnt/$x $fs $MOPT 0 0" >>/etc/fstab
+    if [ ! -d /mnt/$x ]; then
+	mkdir /mnt/$x
+	if [ $fs = ntfs ]; then
+	    ntfs-3g /dev/$x /mnt/$x -o $MOPT 2>/dev/null || { sed -i "/$x /d" /etc/fstab; rmdir /mnt/$x; }
+	else
+	    mount -n /mnt/$x 2>/dev/null || { modprobe $fs 2>/dev/null && mount -n /mnt/$x 2>/dev/null || { sed -i "/$x /d" /etc/fstab; rmdir /mnt/$x; }; }
+	fi
+    fi
+done
+
+if [ -z "`egrep -o " noswap( |\$)" /proc/cmdline`" -a -e /tmp/devices ]; then
+	echo -e "\n# Swap разделы:" >>/etc/fstab
+	for x in `grep 'TYPE="swap"' /tmp/devices | cut -d: -f1`; do echo "$x none swap sw,pri=1 0 0" >>/etc/fstab; done
+	echo -e "\n# Прочее:" >>/etc/fstab ##sfs
+fi }
+mount_device() {
+fs=`blkid /dev/$1 | egrep -o ' TYPE=[^ ]+' | cut -d'"' -f2`
+mkdir /mnt/$1
+if [ $fs = vfat ]; then
+    #mount -n /dev/$1 /mnt/$1 -o $MOPT,umask=0,check=s,utf8
+    mount -n /dev/$1 /mnt/$1 -o $MOPT,umask=0,check=s,utf8=true,quiet,codepage=866,iocharset=utf8
+elif [ $fs = ntfs ]; then
+    ntfs-3g /dev/$1 /mnt/$1 -o $MOPT 2>/dev/null || rmdir /mnt/$1
+else
+    mount -n /dev/$1 /mnt/$1 -o $MOPT 2>/dev/null || { modprobe $fs 2>/dev/null && mount -n /dev/$1 /mnt/$x -o $MOPT || rmdir /mnt/$x; }
+fi }
+
+# Функции поиска:
+search() { FND=none; for x in `ls /mnt`; do
+[ $1 /mnt/$x/$2 ] && { DEV=$x; FND=y; break; }; done
+[ $FND = y ]; }
+lazy() { SLEEP=6; while [ $SLEEP -gt 0 -a $FND = none ]; do nap; let SLEEP=SLEEP-1; fstab; search $*; done }
+locate() { LPATH=`echo $2 | cut -b-5 | sed s@/dev@/mnt@`
+if [ $LPATH = /mnt/ ]; then
+    DEV=`echo $2 | cut -d/ -f3`; LPTH=`echo $2 | cut -d/ -f4-`; SLEEP=6
+    while [ $SLEEP -gt 0 -a ! -b /dev/$DEV ]; do nap; let SLEEP=SLEEP-1; fstab; done
+    [ -d /mnt/$DEV ] || mount_device $DEV
+    [ $1 /mnt/$DEV/$LPTH ]
+elif [ $LPATH = UUID: -o $LPATH = LABEL ]; then
+    ID=`echo $2 | cut -d: -f2 | cut -d/ -f1`; LPTH=`echo $2 | cut -d/ -f2-`; DEV=`blkid | grep $ID | cut -d: -f1 | cut -d/ -f3`; SLEEP=6
+    while [ $SLEEP -gt 0 -a "$DEV" = "" ]; do nap; let SLEEP=SLEEP-1; fstab; DEV=`blkid | grep $ID | cut -d: -f1 | cut -d/ -f3`; done
+    [ -d /mnt/$DEV ] || mount_device $DEV
+    [ $1 /mnt/$DEV/$LPTH ]
+else
+    LPTH=$2; search $* || lazy $*
+fi }
+
+nap() { echo -en $i"[1m""устройство еще не готово? Ждем $SLEEP секунд\r""[0m"; sleep 1; }
+fail() { echo -e $i"невозможно найти $1. Исправте Ваши параметры загрузки ядра (cheatcodes).\n  Нажмите 'enter' чтобы продолжить загрузку."; read -s; }
+fail_chn() { mount -nt tmpfs -o size=$RAMSIZE tmpfs /memory/changes; CHANGES=memory; CHNDEV=memory; }
+draw() { echo "[1;33m""---------------------------------------------------------""[0m"; }
+fsck_dat() { echo $i"проверка $1 на ошибки"
+fs=`blkid $1 | egrep -o ' TYPE=[^ ]+' | cut -b8-10`
+if [ $fs = xfs ]; then
+    echo $i"выявлена xfs - производится проверка файловой системы во время загрузки"
+elif [ $fs = ext ]; then
+    draw; e2fsck -C 0 -p $1; wait; draw
+elif [ $fs = rei ]; then
+    draw; reiserfsck -p $1; wait; draw
+else
+    echo $i"выявлена неподдерживаемая файловая система - пропуск fsck"
+fi }
+cpmod() { NUM=`grep -c '.' $1`
+#for x in `cat $1` ; do 
+for x in `cat $1` $cro ; do ##sfs
+    echo -en "[1;33m""  ($NUM модулей загружено)  \r""[0m"; let NUM=NUM-1; NAME=`basename $x`
+    cp $x /memory/copy2ram 2>/dev/null
+    if [ $? -eq 0 ]; then
+	sed -i s@^.*$NAME@/memory/copy2ram/$NAME@ /tmp/modules
+	cro="/memory/copy2ram/`basename "$cro"`"
+    else
+	rm /memory/copy2ram/$NAME; echo -e $i"[1;36m""Не достаточно памяти для копирования $NAME""[0m"; echo -e $i"[1;36m""Другие модули будут пропущены.""[0m"
+	find /memory/copy2ram -name "*.$xzm" | sort >/tmp/modules
+	break
+    fi
+done 
+echo -e $i"copy2ram успешно завершено"
+}
+
+## Let's start!
+#for x in `find /lib/modules/$(uname -r)/kernel -name "*.ko" 2>/dev/null | sed 's/.ko//g'`; do modprobe `basename $x` 2>/dev/null; done ###sfs
+#for x in `find /lib/modules/$(uname -r)/kernel -name "*.ko" 2>/dev/null | sed 's/.ko//g'`; do modprobe `basename $x` 2>/dev/null && param debug && echo -n "`basename $x` " ; done ###sfs
+#for x in `find /lib/modules/$(uname -r)/kernel -name "*.ko.gz" 2>/dev/null | sed 's/.ko.gz//g'`; do modprobe `basename $x` 2>/dev/null; done ###sfs
+#find /lib/modules/$(uname -r)/kernel -type f \( -name "*.ko" -o  -name "*.ko.gz" \) >/mm2
+KMLOAD(){ ###sfs
+echo -n $i"загрузка всех модулей ядра" 
+for x in `echo $kmlist`; do 
+    modprobe `basename $x` 2>/dev/null && echo -n . && km="$km `basename $x`" && param debug && echo -n "`basename $x` "  
+done 
+}
+
+#mount devpts ;chmod 1777 /dev/shm
+#mkdir -p /proc/sys/kernel && 
+#echo /bin/mdev >/proc/sys/kernel/hotplug
+#mdev -s
+#https://wiki.gentoo.org/wiki/Custom_Initramfs#mdev
+UDEV(){ ###sfs
+	echo $i"запуск udev"
+        /usr/bin/udevd --daemon #2>/dev/null
+        /usr/bin/udevadm trigger --action=add --type=subsystems #2>/dev/null
+        /usr/bin/udevadm trigger --action=add --type=devices #2>/dev/null
+}
+BUS(){ ###sfs DDSE ander
+echo -n $i"загрузка модулей ядра " 
+for bus in pci usb hid acpi platform scsi; do 
+    echo -n .
+    for mod in `cat /sys/bus/${bus}/devices/*/modalias 2>/dev/null`; do modprobe "$mod" 2>/dev/null ;done
+done
+#echo
+#for mod in atkbd loop aufs squashfs lz4_compress fuse ntfs nls_cp437 nls_cp866 nls_iso8859-1 nls_utf8; do modprobe -v "$mod" ; done
+param stop && atkbd=atkbd ;param debug && atkbd=atkbd
+NoWork(){
+#blkid="`blkid |grep -E ' TYPE="ntfs"| TYPE="vfat"| TYPE="iso9660"'`"
+usleep 3000000
+blkid=/tmp/devices2
+blkid |grep -E ' TYPE="ntfs"| TYPE="vfat"| TYPE="iso9660"' >$blkid
+[ "`cat $blkid |grep -E ' TYPE="ntfs"'`" ] && ntfs="ntfs fuse"
+[ "`cat $blkid |grep -E ' TYPE="vfat"'`" ] && vfat="vfat"
+[ "`cat $blkid |grep -E ' TYPE="iso9660"'`" ] && iso="cdrom isofs sr_mod ata_piix"
+[ "$ntfs$vfat" ] && nls="nls_cp866 nls_utf8"
+param debug && echo "blkid=$blkid ntfs=$ntfs" >/blkid.txt
+}
+param debug && lsmod >/tmp/lsmod
+    for x in $iso \
+	usbhid usb_storage \
+	loop lz4_compress aufs squashfs \
+	vfat fuse ntfs nls_cp437 nls_cp866 nls_iso8859-1 nls_utf8 \
+	$atkbd; do modprobe $x ; done ###sfs
+#	$vfat  $ntfs $nls \
+}
+
+if [ -f /usr/bin/udevadm ] ;then ###sfs
+    UDEV
+#+for x in aufs squashfs isofs   r_mod sd_mod loop ata_piix cdrom crc16 jbd2 mbcache nls_utf8 ext4; do modprobe $x 2>/dev/null; done ###sfs
+#+for x in aufs squashfs isofs loop ata_piix cdrom ; do modprobe $x 2>/dev/null; done ###sfs
+##+ for x in ata_piix aufs squashfs; do modprobe $x 2>/dev/null; done ###sfs
+#+    for x in atkbd nls_cp437 nls_cp866 nls_iso8859-1 nls_utf8 vfat ata_piix aufs squashfs; do modprobe $x ; done ###sfs
+    for x in atkbd nls_cp866 nls_utf8 ata_piix aufs squashfs; do modprobe $x ; done ###sfs
+    #usleep 3000000
+else
+ kmlist="`find /lib/modules/$(uname -r)/kernel -type f \( -name "*.ko" -o  -name "*.ko.gz" \) 2>/dev/null | sed 's/.ko//g' |sed 's/.ko.gz//g'`"
+ if [ "$kmlist" ];then
+    param kmall && KMLOAD ;param kmall || BUS ; echo
+ fi
+fi
+param stop && lsmod  #|sort
+stop
+
+mount -nt devtmpfs none /dev
+
+# Произвести проверку файловой системы:
+if param fsck; then
+    echo $i"производится проверка файловой системы линукс на всех доступних устройствах:"
+    draw
+    for x in `blkid | grep 'TYPE="ext' | cut -d: -f1`; do e2fsck -C 0 -p $x; wait; done
+    for x in `blkid | grep 'TYPE="reiserfs"' | cut -d: -f1`; do reiserfsck -p $x; wait; done
+    draw
+fi
+
+# Создать /etc/fstab и примонтировать devices:
+fstab
+
+debug
+# Найти файл *.sgn:
+echo $i"идет поиск файла '$SGN'"
+if [ $IP ]; then BOOTDEV=network; SGNDEV=/opt/httpfs
+    for x in `find /lib/modules/$(uname -r)/kernel/drivers/net -name "*.ko" | sed 's/.ko//g'`; do modprobe $x 2>/dev/null; [ -d /sys/class/net/eth0 ] && break || modprobe -r $x 2>/dev/null; done
+    udhcpc; mkdir -p /opt/httpfs; httpfs http://$IP /opt/httpfs
+elif [ $ISO ]; then SGNDEV=/opt/isoloop
+    locate -e $FROM && { BOOTDEV=/mnt/$DEV; mkdir /opt/isoloop; mount -o loop /mnt/$DEV/$LPTH /opt/isoloop; }
+else
+    if [ $FROM ]; then
+###	locate -e $FROM/porteus/$SGN
+	locate -e $FROM/$FOLDER/$SGN
+	if [ $? -eq 0 ]; then
+	    DIR=`echo $LPTH | rev | cut -d/ -f3- | rev`; [ $DIR ] && FOLDER=$DIR/porteus
+	else
+	    echo $i"from= не правильный cheatcode, нажмите enter для поиска на всех дисках"
+###	    read -s; search -e porteus/$SGN
+	    read -s; search -e $FOLDER/$SGN
+	fi
+    else
+###	search -e porteus/$SGN || lazy -e porteus/$SGN
+	search -e $FOLDER/$SGN || lazy -e $FOLDER/$SGN
+    fi
+    SGNDEV=/mnt/$DEV
+fi
+
+[ -e $SGNDEV/$FOLDER/$SGN ] && PTH=$SGNDEV/$FOLDER || . fatal
+echo $i"используются модули дистрибутива из $PTH"
+
+MODDIR=$PTH/modules
+BASDIR=${PTH%/*}
+
+# Сделать доступными все драйвера:
+[ "`uname -m`" = "x86_64" ] && a64="_64"
+kernelpfs="$(find $PTH/base/000-kernel-`uname -r`$a64.$xzm  2>/dev/null)" \
+    || kernelpfs="`find $PTH/base/000-kernel.$xzm  2>/dev/null`" \
+    || echo $i"[1;36m""модули 000-kernel, 000-kernel-`uname -r`$a64 отсутствуют""[0m"
+mount -o loop -t squashfs "$kernelpfs" /opt/000-kernel 2>/dev/null
+#mount -o loop -t squashfs $PTH/base/000-kernel.$xzm /opt/000-kernel 2>/dev/null
+mount -o bind /opt/000-kernel/lib/modules /lib/modules 2>/dev/null 
+#if [ -d /opt/000-kernel/lib/modules ] ;then
+if [ -d /opt/000-kernel/lib/modules ] || [ -d /opt/000-kernel/usr/lib/modules ] ;then ##sfs
+	echo $i"подключены модули ядра"
+    else
+	echo $i"[1;36m""модуль 000-kernel отсутствует или имеет неправильную структуру""[0m"
+fi
+
+# Создать симлинки часто используемые скриптами портеуса:
+ln -sf $PTH/modules  /porteus/modules
+ln -sf $PTH/optional /porteus/optional
+#[ -d $PTH/modules ]  || ln -sf $PTH/modules  /$FOLDER/modules
+#[ -d $PTH/optional ] || ln -sf $PTH/optional /$FOLDER/optional
+
+debug
+# Изменения установки:
+if [ $CHANGES ]; then
+    echo $i"подключение сохранения (changes)"
+    CHNEXIT=`echo $CHANGES | cut -d: -f1`; [ $CHNEXIT = EXIT ] && CHANGES=`echo $CHANGES | cut -d: -f2-`
+    CHNRO=`echo $CHANGES | cut -d: -f1`; [ $CHNEXIT = RO ] && CHANGES=`echo $CHANGES | cut -d: -f2-` ##sfs
+    locate -r $CHANGES
+    if [ $? -eq 0 ]; then
+	    #[ ! -f /mnt/$DEV/$LPTH ] && echo $i"[1;36m"":RO сохранение должно быть файлом. Пропуск $LPTH" && CHNRO= || cro="/mnt/$DEV/$LPTH" ##sfs
+#	    [ ! "$CHANGES" ] && [ ! -f /mnt/$DEV/$LPTH ] && ( echo $i"[1;36m"":RO сохранение должно быть файлом. Пропуск $LPTH" && CHNRO= ) || cro="/mnt/$DEV/$LPTH" ##sfs
+###	    if [ ! "$CHNRO" ] ;then ##sfs
+	    if [ $CHNRO != RO ] ;then ##sfs1
+	if [ -d /mnt/$DEV/$LPTH ]; then
+		    mkdir -p /mnt/$DEV/$LPTH/changes 2>/dev/null && \
+		    mount -o bind /mnt/$DEV/$LPTH/changes /memory/changes && touch /memory/changes/._test1 2>/dev/null
+	else
+	    if blkid /mnt/$DEV/$LPTH 2>/dev/null | cut -d" " -f3- | grep -q _LUKS; then
+		for x in dm_crypt cryptd cbc sha256_generic aes_generic aes_x86_64; do modprobe $x 2>/dev/null; done
+		losetup /dev/loop2 /mnt/$DEV/$LPTH
+		echo $i"Найден зашифрованный файл сохранения. Введите его пароль."
+		/opt/000-kernel/sbin/cryptsetup luksOpen /dev/loop2 crypt
+		fsck_dat /dev/mapper/crypt
+		mount /dev/mapper/crypt /memory/changes 2>/dev/null && touch /memory/changes/._test1 2>/dev/null
+	    else
+		fsck_dat /mnt/$DEV/$LPTH
+		mount -o loop /mnt/$DEV/$LPTH /memory/changes 2>/dev/null && touch /memory/changes/._test1 2>/dev/null
+	    fi
+	fi
+	if [ $? -eq 0 ]; then
+	    echo $i"проверка $CHANGES файловой системы на совместимость с posix"
+	    ln -s /memory/changes/._test1 /memory/changes/._test2 2>/dev/null && chmod +x /memory/changes/._test1 2>/dev/null && [ -x /memory/changes/._test1 ] && chmod -x /memory/changes/._test1 2>/dev/null && [ ! -x /memory/changes/._test1 ] && rm -f /memory/changes/._test1 /memory/changes/._test2
+	    if [ $? -ne 0 ]; then
+		rm -f /memory/changes/._test1 /memory/changes/._test2; umount /memory/changes
+		echo && echo -e "[1;33m""Файловая ситсема Windows (FAT, NTFS) или другая не posix совместимая файловая система\nбыла обнаружена на $CHANGES.\nВаши изменения не могут быть сохранены прямо на the specified storage media с этой\nустановки. Пожалуйста используйте '[1;36mменеджер сохранения[1;33m' чтоб создать .dat контейнер\nи используйте его для сохранения изменений после следующей перезагрузки.""[0m"
+		echo "нажмите enter чтобы продолжить '[1;36mБЕЗ подключения[0m' Вашего сохранения (changes)"
+		read; rmdir /mnt/$DEV/$LPTH/changes; fail_chn
+	    else
+		echo $i"файловая система совместима с posix"; CHNDEV=/mnt/$DEV
+		rmdir /memory/changes/mnt/* 2>/dev/null
+		rm -f /memory/changes/var/lock/subsys/* /var/run/laptop-mode-tools/*
+		for x in `find /memory/changes/var/run -name "*pid" 2>/dev/null`; do rm $x; done
+		if [ $CHNEXIT = EXIT ]; then
+		    CHNEXIT=$CHNDEV/$LPTH; echo $CHNEXIT >/tmp/changes-exit
+		    echo $i"[1;36m""изменения сохранятся только после перезагрузки/выключения""[0m"
+#		    for x in `find /memory/changes -name ".wh.*"`; do cp -a --parents $x /var; done
+#		    umount /memory/changes; mount -nt tmpfs -o size=$RAMSIZE tmpfs /memory/changes; mv /var/memory/changes/* /memory/changes 2>/dev/null; CHANGES=memory
+		    umount /memory/changes; mount -nt tmpfs -o size=$RAMSIZE tmpfs /memory/changes; CHANGES=memory
+		fi
+	    fi
+	else
+	    echo $i"Ваш файл (директория или раздел диска) сохранения не доступен для записи, работа в памяти"; umount /memory/changes 2>/dev/null; fail_chn
+	fi
+    	    else [ ! -f /mnt/$DEV/$LPTH ] && ( echo $i"[1;36m"":RO сохранение должно быть файлом. Пропуск changes=$LPTH.
+  Для продолжения загрузки нажмите Enter. Для перезагрузки: Ctrl+Alt+Del." && CHNRO= && read -s ) || cro="/mnt/$DEV/$LPTH" ##sfs1
+    	    fi ##sfs1
+else
+	fail $CHANGES; fail_chn
+    fi
+else
+     echo $i"параметр загрузки changes не обнаружен, работа в памяти"; fail_chn
+fi
+
+mkdir -p /memory/changes/mnt/live
+
+debug
+# Настройка aufs:
+echo $i"создание aufs файловой системы и подключение модулей"
+mount -t aufs -o nowarn_perm,xino=/memory/xino/.aufs.xino,br:/memory/changes=rw aufs /union
+if [ $? -ne 0 ]; then echo "[31m""невозможно создать union (aufs) - файловая система только для чтения?\nКогда закончите отладку нажмите Ctrl+Alt+Del для перезагрузки.""[0m"; sh; fi
+
+# Поиск модулей:
+find $PTH/base $PTH/modules -name "*.$xzm" 2>/dev/null | egrep -v "$NOLOAD" | sort >/tmp/modules
+find $PTH/optional -name "*.$xzm" 2>/dev/null | egrep "$LOAD" | sort >>/tmp/modules
+
+
+if param vga_detect; then
+    echo $i"поиск GPU"
+    lspci >/tmp/lspci; nv=`grep "0300: 10de:" /tmp/lspci | cut -d":" -f4`; amd=`grep "0300: 1002:" /tmp/lspci | cut -d":" -f4`
+    if [ $nv ]; then
+	echo $i"$nv чипсет найден, проверка поддерживаемого драйвера nVidia"
+	cd /usr/share/pciids/nVidia; NV=`grep $nv * | cut -d: -f1`; cd /
+	if [ $NV ]; then
+	    echo $i"nVidia-$NV.xx драйвер будет задействован -"
+	    echo $i"если присутствует в директории $PTH/optional"
+	    find $PTH/optional -name "nVidia-$NV*" 2>/dev/null >>/tmp/modules
+	else
+	    echo $i"последний драйвер nVidia будет задействован -"
+	    echo $i"если присутствует в директории $PTH/optional"
+	    find $PTH/optional -name "nVidia-*" 2>/dev/null | egrep -v '96.43.|173.14.|304.' >>/tmp/modules
+	fi
+    elif [ $amd ]; then
+	echo $i"проверка принадлежит ли $amd GPU к серии'Radeon HD'"
+	cd /usr/share/pciids/AMD; HD=`grep $amd * | cut -d: -f1`; cd /
+	if [ $HD ]; then
+            echo $i"проприетарный драйвер AMD будет задействован -"
+            echo $i"если присутствует в директории $PTH/optional"
+            find $PTH/optional -name "$HD-1*" 2>/dev/null >>/tmp/modules
+        else
+            echo $i"$amd GPU не поддерживается драйвером amd-catalyst - отказ"
+        fi
+    else
+        echo $i"не найдено nVidia/AMD GPU на этом ПК"
+    fi
+fi
+
+if param base_only; then
+#    grep base/00 /tmp/modules > /tmp/mod
+    grep base/0 /tmp/modules > /tmp/mod
+    mv /tmp/mod /tmp/modules
+else
+    if [ "$EXTRAMOD" ]; then
+	for folder in $EXTRAMOD; do
+	    echo $i"поиск дополнительных модулей в $folder"
+	    locate -d $folder && { find /mnt/$DEV/$LPTH -name "*.$xzm" 2>/dev/null | egrep -v "$NOLOAD" | sort >>/tmp/modules; } || fail $folder
+	done
+    fi
+fi
+
+if [ "$(echo "$kernelpfs" |grep `uname -r`)" ] ;then ###sfs грузим модули только своего ядра
+    grep -Ev '/000-kernel|/nVidia-|/amd-catalyst-|/vbox-kmod-' /tmp/modules >/tmp/modules2
+    grep -E  '/000-kernel|/nVidia-|/amd-catalyst-|/vbox-kmod-' /tmp/modules >/tmp/modules-k
+    grep "`uname -r`" /tmp/modules-k >/tmp/modules
+    cat /tmp/modules2 >>/tmp/modules
+fi
+
+# Копирование данных в RAM:
+if param copy2ram; then
+    echo $i"копирование модулей .pfs .xzm в память (copy2ram), ждите..."
+    [ $RAMMOD ] && { egrep "$RAMMOD" /tmp/modules > /tmp/rammod; cpmod /tmp/rammod; } || cpmod /tmp/modules
+fi
+
+# Заполнение aufs модулями:
+##sfs(
+if [ -f "$cro" ] ;then
+	    if blkid "$cro" 2>/dev/null | cut -d" " -f3- | grep -q _LUKS; then
+	    #if echo "$cro" | egrep ".luks$"; then
+		for x in dm_crypt cryptd cbc sha256_generic aes_generic aes_x86_64; do modprobe $x 2>/dev/null; done
+		losetup /dev/loop2 "$cro"
+		echo $i"Найден зашифрованный файл сохранения RO (только чтение)."
+		echo $i"Введите пароль для `basename "$cro"`."
+		/opt/000-kernel/sbin/cryptsetup luksOpen /dev/loop2 crypt
+		fsck_dat /dev/mapper/crypt && crofsck=c || fail "$cro"
+		debug
+		#mount /dev/mapper/crypt /memory/changes 2>/dev/null && touch /memory/changes/._test1 2>/dev/null
+	    else
+		echo $i"Найден файл сохранения RO (только чтение) `basename "$cro"`."
+		mkdir /memory/savero && mount -o loop "$cro" /memory/savero && fsck_dat /$DEV/$LPTH && crofsck=1 || fail "$cro"
+		debug
+		#mount -o loop /mnt/$DEV/$LPTH /memory/changes 2>/dev/null && touch /memory/changes/._test1 2>/dev/null
+	    fi
+fi
+##sfs)
+umount /lib/modules /opt/000-kernel 2>/dev/null
+
+###sfs( Перенос номерных модулей в верхний слой aufs с сортировкой
+SORT=`value sort'`
+if [ "$SORT" ];then
+    if [ "`echo "$SORT" |grep -v "^[0-9-]\+$"`" ];then
+	echo -e "[31m""!!Ошибка!!\nВ параметре sort= можно указывать только цифры.\n
+Например : sort=456789 или sort=4-9
+Модули, начинающиеся с 0xy- , будут загружены верхний слой
+AUFS по алфавиту (т.е. перекроют остальные модули)
+   x - указанное Вами маска в sort=; y - любая цифра
+
+Напррмер :
+/mnt/sda1/pra3/base/000-kernel.pfs
+/mnt/sda1/pra3/base/001-Pra03arch12nos.pfs
+/mnt/sda1/pra3/base/040-jwm-pra3c.pfs
+/mnt/sda1/pra3/base/070-Pra-151119.pfs
+/mnt/sda1/pra3/base/089-pra-up.pfs
+/mnt/sda1/pra3/base/090-save-150921net-pra.pfs
+/mnt/sda1/pra3/modules/042-cow-notify-s04.pfs
+/mnt/sda1/pra3/optional/075-Systemd-217-8-s03.pfs
+
+с sort=4-9 :
+/mnt/sda1/pra3/base/000-kernel.pfs
+/mnt/sda1/pra3/base/001-Pra03arch12nos.pfs
+/mnt/sda1/pra3/base/040-jwm-pra3c.pfs
+/mnt/sda1/pra3/modules/042-cow-notify-s04.pfs
+/mnt/sda1/pra3/base/070-Pra-151119.pfs
+/mnt/sda1/pra3/optional/075-Systemd-217-8-s03.pfs
+/mnt/sda1/pra3/base/089-pra-up.pfs
+/mnt/sda1/pra3/base/090-save-150921net-pra.pfs
+
+Нажмите Ctrl+Alt+Del для перезагрузки.""[0m"
+	exit
+    fi
+grep -Ev "/0[$SORT][0-9]-" /tmp/modules >/tmp/modules1
+grep -E  "/0[$SORT][0-9]-" /tmp/modules | while read i; do
+    i1=${i##*/}
+    i2=${i%/*}
+    echo "$i1$i2"
+done | sort -n | while read i; do
+    i1=${i#*/}
+    i2=${i%%/*}
+    echo "/$i1/$i2"
+done >/tmp/modules2
+cat /tmp/modules1 /tmp/modules2 >/tmp/modules
+fi
+###sfs)
+for x in `cat /tmp/modules`; do
+    NAME=`basename $x`; mkdir /memory/images/$NAME; mount -t squashfs -o loop $x /memory/images/$NAME 2>/dev/null
+    if [ $? -eq 0 ]; then
+	#param debug && 	echo "  $m  $NAME"; mount -no remount,add:1:/memory/images/$NAME=rr aufs /union
+	param stop && 	echo "  $m  $NAME"
+	param debug && 	echo "  $m  $NAME"; mount -no remount,add:1:/memory/images/$NAME=rr+wh aufs /union
+    else
+	echo $i"[1;36m""Невозможно прочитать $NAME - испорченый модуль?""[0m"; rmdir /memory/images/$NAME
+    fi
+done
+
+##sfs(
+if [ "$crofsck" = "c" ] ;then
+	[ "$crofsck" ] && mkdir /memory/savero && mount /dev/mapper/crypt /memory/savero 2>/dev/null \
+	    && mount -o remount,add:1:/memory/savero=ro /union && echo $i"Файл сохранения RO успешно примонтирован." || echo $i"[1;36m""Файл сохранения RO примонтировать не удалось."
+#	    && mkdir /memory/saverobind && mount --bind /memory/savero /memory/saverobind \
+	debug
+else 
+	[ "$crofsck" ] && mount --bind /memory/savero / 2>/dev/null 
+	debug
+fi
+##sfs)
+mount -no bind /union/lib/modules /lib/modules 2>/dev/null
+
+# Добавить "изменения при выходе" device/file/folder:
+if [ -e /tmp/changes-exit ]; then
+    mkdir /memory/images/changes
+    if [ -d $CHNEXIT ]; then
+	mount -o bind $CHNEXIT/changes /memory/images/changes
+    elif [ -b /dev/mapper/crypt ]; then
+	mount /dev/mapper/crypt /memory/images/changes
+    else
+	mount -o loop $CHNEXIT /memory/images/changes
+    fi
+    echo "  $m  changes"; mount -no remount,add:1:/memory/images/changes=ro+wh aufs /union
+    echo $CHNEXIT/changes >>/tmp/modules
+fi
+
+debug
+# Копирование папки /rootcopy:
+if param norootcopy; then
+    ROOTCOPY=none
+    echo $i"пропуск директории /rootcopy"
+else
+    if [ $ROOTCOPY ]; then
+	locate -d $ROOTCOPY
+	if [ $? -eq 0 ]; then echo $i"копирование содержимого директории $ROOTCOPY"; cp -af /mnt/$DEV/$LPTH/. /union/. 2>/dev/null; else fail $ROOTCOPY; ROOTCOPY=none; fi
+    else
+	ROOTCOPY=none
+	echo $i"копирование содержимого директории $PTH/rootcopy"
+	cp -af $PTH/rootcopy/. /union/. 2>/dev/null
+    fi
+fi
+[ -f /usr/bin/udevadm ] && udevadm control --exit ###sfs
+
+nemesis(){
+## Check network setup
+. ./functions
+
+## Export environment variables
+export_variables
+
+# Copy config files
+[ ! -d /union/etc/porteus.d ] && mkdir -p /union/etc/porteus.d
+cp -a $BASDIR/config/* /union/etc/porteus.d
+chmod 755 /union/etc/porteus.d
+chmod 644 /union/etc/porteus.d/*
+
+# Check if we are booting into runlevel 3 or a desktop
+[ -z "`egrep -o " 3( |\$)" /proc/cmdline`" ] && check_desktop
+
+## Check for firstrun
+check_firstrun
+}
+#[ "`find /mnt/$DEV/$LPTH -name "*.xzm" 2>/dev/null`" ] && nemesis
+##[ -f /union/etc/pra ] && echo $i"PuppyRus-A" || nemesis
+debug
+## Конец:
+# Создание 7 пустых loop devices для шифрования и т.д.
+x=`losetup | tail -n1 | cut -d: -f1 | sed 's@/dev/loop@@'`; let y=x+7
+while [ $x -le $y ]; do [ -b /dev/loop$y ] && break || mknod /dev/loop$y b 7 $y; let y=y-1; done
+
+if param nonetwork; then
+    echo $i"отключение сетевых служб"
+    chmod -x /union/etc/rc.d/rc.inet1 /union/etc/rc.d/rc.networkmanager 2>/dev/null
+    nma=/union/etc/xdg/autostart/nm-applet.desktop
+    test -e $nma && ! grep -q "Hidden=true" $nma && echo "Hidden=true" >> $nma
+fi
+
+cp -af /dev/console /union/dev
+if [ ! -L /union/etc/mtab ] ; then ###sfs
+cat > /union/etc/mtab << EOF
+aufs / aufs rw 0 0
+proc /proc proc rw 0 0
+sysfs /sys sysfs rw 0 0
+devtmpfs /dev devtmpfs rw 0 0
+devpts /dev/pts devpts rw,mode=0620,gid=5 0 0
+EOF
+fi
+fstab
+
+debug
+if param copy2ram; then
+    [ $SGNDEV = /opt/isoloop -o $SGNDEV = /opt/httpfs ] && { umount `grep $SGNDEV /etc/mtab | cut -d" " -f2`; SGNDEV=$BOOTDEV; }
+    CHNDISK=`echo $CHNDEV | cut -b6-8`; SGNDISK=`echo $SGNDEV | cut -b6-8`; REMOVABLE=`cat /sys/block/$SGNDISK*/removable 2>/dev/null`
+    if [ -z "`egrep -o " noeject( |\$)" /proc/cmdline`" -a "$CHNDISK" != "$SGNDISK" ]; then
+	if [ "$REMOVABLE" = 1 ]; then
+	    for rdisk in `ls /mnt | grep $SGNDISK`; do
+		umount -n /mnt/$rdisk 2>/dev/null && rmdir /mnt/$rdisk
+		if [ $? -eq 0 ]; then
+		    grep -qw "/dev/$rdisk.*iso9660" /etc/fstab && /union/usr/bin/eject /dev/$rdisk
+		    sed -i "/$rdisk/d" /etc/fstab
+		fi
+	    done
+	    [ `ls /mnt | grep $SGNDISK` ] || echo $i"[1;36m""скопировано в оперативную память - загрузочное устройство можно безопасно извлечь""[0m"
+	else
+	    if param nohd; then umount /mnt/* 2>/dev/null; rmdir /mnt/* 2>/dev/null; fi
+	fi
+    fi
+fi
+
+# Создание файла отладки:
+[ -e /tmp/devices ] && { echo "# Опознаны устройства:" >$livedbg; cat /tmp/devices >>$livedbg; }
+[ $BOOTDEV ] && SGNDEV=$BOOTDEV
+echo -e "\n# Загрузочное устройство:\n$SGNDEV\n\n# Модули дистрибутива найдены в:\n$PTH\n\n# Изменения сохранены в:\n$CHANGES\n\n# Нестандартная директория /rootcopy :\n$ROOTCOPY\n\n# Модули активированые во время загрузки:" >>$livedbg; cat /tmp/modules >>$livedbg
+cp -af $livedbg /union/var/log/porteus-livedbg
+    [ -L /union/mnt/home ] || ln -sf $SGNDEV /union/mnt/home ### sfs
+
+param debug || param 1 || param emergency && sed -i 's/Storage=none/Storage=auto/' /union/etc/systemd/journald.conf ###sfs
+
+
+if param noauto; then
+    #for x in `grep /mnt/ /etc/fstab | cut -d/ -f3`; do mkdir -p /union/mnt/$x; umount -n /mnt/$x 2>/dev/null && rmdir /mnt/$x; done
+    for x in `grep /mnt/ /etc/fstab | cut -d/ -f3`; do mkdir -p /union/mnt/$x; umount -n /mnt/$x 2>/dev/null && rmdir /mnt/$x; sed -i 's-/dev/'$x'-#/dev/'$x'-' /etc/fstab ; done
+    if ! param copy2ram; then
+echo
+	[ -d /union$SGNDEV ] && rmdir /union$SGNDEV ; ln -sf /mnt/live$SGNDEV /union/$SGNDEV ### sfs home fix
+    fi
+else
+    grep /mnt/ /etc/fstab >> /union/etc/mtab
+    for x in `grep /mnt/ /etc/fstab | cut -d/ -f3`; do mkdir -p /union/mnt/$x; mount -n --move /mnt/$x /union/mnt/$x; rmdir /mnt/$x; done
+fi
+cp -f /etc/fstab /union/etc 2>/dev/null
+umount -n /lib/modules 2>/dev/null
+rm -r /lib/* /usr/*
+
+#cp -f /union/sbin/init /bin 2>/dev/null || cp -f /union/lib/systemd/systemd /bin/init
+cp -f /union/lib/systemd/systemd /bin/init 2>/dev/null && echo $i"обнаружен systemd" || cp -f /bin/busybox /bin/init
+#cp -f /union/sbin/init /bin || ln -sf /bin/busybox /bin/init 
+debug
+#stop ###sfs
+KMUNLOAD(){ ###sfs
+echo -n $i"выгрузка лишних модулей ядра"
+ln -s /union/lib/modules /lib/modules
+#for x in `echo $km`; do modprobe -rfq $x && echo -n . && param debug && echo -n "`basename $x` " ; done ###sfs
+#for x in `echo $kmlist`; do modprobe -rfq `basename $x` && echo -n . && param debug && echo -n "`basename $x` " ; done ###sfs
+#for x in `lsmod |tail -n+2 |cut -d\  -f1`; do modprobe -rfq $x && echo -n . && param debug && echo -n "`basename $x` " ; done ###sfs
+#+for x in `lsmod |tail -n+2 |cut -d\  -f1 |grep -v -E 'atkb|loop|nls_|lz4_comp|uhci|usb|fat|fs|fuse|ata|hci'`; do modprobe -rfq $x && echo -n . && param debug && echo -n "`basename $x` " ; done ###sfs
+for x in `lsmod |tail -n+2 |cut -d\  -f1 |grep -v -E 'atkb|loop|fuse|fs|ata|hci'`; do modprobe -rfq $x && echo -n . && param debug && echo -n "`basename $x` " ; done ###sfs
+#for x in `echo $km`; do busybox rmmod -rfq $x && echo -n . && param debug && echo -n "`basename $x` " ; done ###sfs
+#echo -e "\nlsmod:\n$km\n" >>/union/$livedbg ; lsmod >>/union/$livedbg
+}
+param ukm && KMUNLOAD
+param stop && lsmod |sort
+echo "[1m""live система готова - запуск системы""[0m"
+#param stop &&  modprobe atkbd libps2 serio i8042
+stop
+debug
+clear ###sfs
+if [ $? -eq 0 ]; then
+    pivot_root /union  /union/mnt/live
+    #exec bin/chroot . /mnt/live/bin/init "$@" <dev/console >dev/console 2>&1
+    [ -e bin/chroot ] && chroot=bin/chroot || chroot=usr/sbin/chroot  #sfs
+        exec $chroot . /mnt/live/bin/init "$@" <dev/console >dev/console 2>&1 
+else
+    echo -e "[31m""!!Ошибка!!\nЧто-то пошло не так и не возможно продолжать.\nНажмите Ctrl+Alt+Del для перезагрузки.""[0m"
+    sh
+fi
