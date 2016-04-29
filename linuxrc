@@ -33,6 +33,37 @@ loc_modules3="модуль 000-kernel отсутствует или имеет �
 loc_changes="подключение сохранения (changes)"
 loc_changescrypt="Найден зашифрованный файл сохранения. Введите его пароль."
 loc_posix="проверка $CHANGES файловой системы на совместимость с posix"
+loc_posix2="Файловая система Windows (FAT, NTFS) или другая не posix совместимая файловая система\nбыла обнаружена на $CHANGES.\nВаши изменения не могут быть сохранены прямо на the specified storage media с этой\nустановки. Пожалуйста используйте '[1;36mменеджер сохранения[1;33m' чтоб создать .dat контейнер\nи используйте его для сохранения изменений после следующей перезагрузки."
+loc_posix3="нажмите enter чтобы продолжить '[1;36mБЕЗ подключения[0m' Вашего сохранения (changes)"
+loc_posix4="файловая система совместима с posix"
+loc_posix5="изменения сохранятся только после перезагрузки/выключения"
+loc_warnmes1="Ваш файл (каталог или раздел диска) сохранения не доступен для записи, работа в памяти"
+loc_warnro=":RO сохранение должно быть файлом. Пропуск changes=$LPTH.  \nДля продолжения загрузки нажмите Enter. Для перезагрузки: Ctrl+Alt+Del."
+loc_warnchanges="параметр загрузки changes не обнаружен, работа в памяти"
+loc_aufs="создание aufs файловой системы и подключение модулей"
+loc_warnaufs="невозможно создать union (aufs) - файловая система только для чтения?\nКогда закончите отладку нажмите Ctrl+Alt+Del для перезагрузки."
+loc_gpu1="поиск GPU"
+loc_gpu2="чипсет найден, проверка поддерживаемого драйвера nVidia"
+loc_gpu3="nVidia-$NV.xx драйвер будет задействован -"
+loc_gpu4="если присутствует в директории"
+loc_gpu5="последний драйвер nVidia будет задействован -"
+loc_gpu6="проверка принадлежит ли $amd GPU к серии'Radeon HD'"
+loc_gpu7="проприетарный драйвер AMD будет задействован -"
+loc_gpu8="GPU не поддерживается драйвером amd-catalyst - отказ"
+loc_gpu9="не найдено nVidia/AMD GPU на этом ПК"
+loc_extramod="поиск дополнительных модулей в"
+loc_copy2ram2="копирование модулей .pfs .xzm в память (copy2ram), ждите..."
+loc_crypt1="Найден зашифрованный файл сохранения RO (только чтение)."
+loc_crypt2="Введите пароль для"
+loc_crypt3="Найден файл сохранения RO (только чтение)"
+loc_
+loc_
+loc_
+loc_
+loc_
+loc_
+loc_
+loc_
 
 
 # Включить pivot_root в initramfs чтобы он вел себя как initrd:
@@ -362,42 +393,41 @@ if [ $CHANGES ]; then
 	    ln -s /memory/changes/._test1 /memory/changes/._test2 2>/dev/null && chmod +x /memory/changes/._test1 2>/dev/null && [ -x /memory/changes/._test1 ] && chmod -x /memory/changes/._test1 2>/dev/null && [ ! -x /memory/changes/._test1 ] && rm -f /memory/changes/._test1 /memory/changes/._test2
 	    if [ $? -ne 0 ]; then
 		rm -f /memory/changes/._test1 /memory/changes/._test2; umount /memory/changes
-		echo && echo -e "[1;33m""Файловая ситсема Windows (FAT, NTFS) или другая не posix совместимая файловая система\nбыла обнаружена на $CHANGES.\nВаши изменения не могут быть сохранены прямо на the specified storage media с этой\nустановки. Пожалуйста используйте '[1;36mменеджер сохранения[1;33m' чтоб создать .dat контейнер\nи используйте его для сохранения изменений после следующей перезагрузки.""[0m"
-		echo "нажмите enter чтобы продолжить '[1;36mБЕЗ подключения[0m' Вашего сохранения (changes)"
+		echo && echo -e "[1;33m""${loc_posix2}""[0m"
+		echo "${loc_posix3}"
 		read; rmdir /mnt/$DEV/$LPTH/changes; fail_chn
 	    else
-		echo $i"файловая система совместима с posix"; CHNDEV=/mnt/$DEV
+		echo $i"${loc_posix4}"; CHNDEV=/mnt/$DEV
 		rmdir /memory/changes/mnt/* 2>/dev/null
 		rm -f /memory/changes/var/lock/subsys/* /var/run/laptop-mode-tools/*
 		for x in `find /memory/changes/var/run -name "*pid" 2>/dev/null`; do rm $x; done
 		if [ $CHNEXIT = EXIT ]; then
 		    CHNEXIT=$CHNDEV/$LPTH; echo $CHNEXIT >/tmp/changes-exit
-		    echo $i"[1;36m""изменения сохранятся только после перезагрузки/выключения""[0m"
+		    echo $i"[1;36m""${loc_posix5}""[0m"
 #		    for x in `find /memory/changes -name ".wh.*"`; do cp -a --parents $x /var; done
 #		    umount /memory/changes; mount -nt tmpfs -o size=$RAMSIZE tmpfs /memory/changes; mv /var/memory/changes/* /memory/changes 2>/dev/null; CHANGES=memory
 		    umount /memory/changes; mount -nt tmpfs -o size=$RAMSIZE tmpfs /memory/changes; CHANGES=memory
 		fi
 	    fi
 	else
-	    echo $i"Ваш файл (директория или раздел диска) сохранения не доступен для записи, работа в памяти"; umount /memory/changes 2>/dev/null; fail_chn
+	    echo $i"${loc_warnmes1}"; umount /memory/changes 2>/dev/null; fail_chn
 	fi
-    	    else [ ! -f /mnt/$DEV/$LPTH ] && ( echo $i"[1;36m"":RO сохранение должно быть файлом. Пропуск changes=$LPTH.
-  Для продолжения загрузки нажмите Enter. Для перезагрузки: Ctrl+Alt+Del." && CHNRO= && read -s ) || cro="/mnt/$DEV/$LPTH" ##sfs1
+    	    else [ ! -f /mnt/$DEV/$LPTH ] && ( echo $i"[1;36m""${loc_warnro}" && CHNRO= && read -s ) || cro="/mnt/$DEV/$LPTH" ##sfs1
     	    fi ##sfs1
 else
 	fail $CHANGES; fail_chn
     fi
 else
-     echo $i"параметр загрузки changes не обнаружен, работа в памяти"; fail_chn
+     echo $i"${loc_warnchanges}"; fail_chn
 fi
 
 mkdir -p /memory/changes/mnt/live
 
 debug
 # Настройка aufs:
-echo $i"создание aufs файловой системы и подключение модулей"
+echo $i"${loc_aufs}"
 mount -t aufs -o nowarn_perm,xino=/memory/xino/.aufs.xino,br:/memory/changes=rw aufs /union
-if [ $? -ne 0 ]; then echo "[31m""невозможно создать union (aufs) - файловая система только для чтения?\nКогда закончите отладку нажмите Ctrl+Alt+Del для перезагрузки.""[0m"; sh; fi
+if [ $? -ne 0 ]; then echo "[31m""${loc_warnaufs}""[0m"; sh; fi
 
 # Поиск модулей:
 find $PTH/base $PTH/modules -name "*.$xzm" 2>/dev/null | egrep -v "$NOLOAD" | sort >/tmp/modules
@@ -405,32 +435,32 @@ find $PTH/optional -name "*.$xzm" 2>/dev/null | egrep "$LOAD" | sort >>/tmp/modu
 
 
 if param vga_detect; then
-    echo $i"поиск GPU"
+    echo $i"${loc_gpu1}"
     lspci >/tmp/lspci; nv=`grep "0300: 10de:" /tmp/lspci | cut -d":" -f4`; amd=`grep "0300: 1002:" /tmp/lspci | cut -d":" -f4`
     if [ $nv ]; then
-	echo $i"$nv чипсет найден, проверка поддерживаемого драйвера nVidia"
+	echo $i"$nv ${loc_gpu2}"
 	cd /usr/share/pciids/nVidia; NV=`grep $nv * | cut -d: -f1`; cd /
 	if [ $NV ]; then
-	    echo $i"nVidia-$NV.xx драйвер будет задействован -"
-	    echo $i"если присутствует в директории $PTH/optional"
+	    echo $i"${loc_gpu3}"
+	    echo $i"${loc_gpu4} $PTH/optional"
 	    find $PTH/optional -name "nVidia-$NV*" 2>/dev/null >>/tmp/modules
 	else
-	    echo $i"последний драйвер nVidia будет задействован -"
-	    echo $i"если присутствует в директории $PTH/optional"
+	    echo $i"${loc_gpu5}"
+	    echo $i"${loc_gpu4} $PTH/optional"
 	    find $PTH/optional -name "nVidia-*" 2>/dev/null | egrep -v '96.43.|173.14.|304.' >>/tmp/modules
 	fi
     elif [ $amd ]; then
-	echo $i"проверка принадлежит ли $amd GPU к серии'Radeon HD'"
+	echo $i"${loc_gpu6}"
 	cd /usr/share/pciids/AMD; HD=`grep $amd * | cut -d: -f1`; cd /
 	if [ $HD ]; then
-            echo $i"проприетарный драйвер AMD будет задействован -"
-            echo $i"если присутствует в директории $PTH/optional"
+            echo $i"${loc_gpu7}"
+            echo $i"${loc_gpu4} $PTH/optional"
             find $PTH/optional -name "$HD-1*" 2>/dev/null >>/tmp/modules
         else
-            echo $i"$amd GPU не поддерживается драйвером amd-catalyst - отказ"
+            echo $i"$amd ${loc_gpu8}"
         fi
     else
-        echo $i"не найдено nVidia/AMD GPU на этом ПК"
+        echo $i"${loc_gpu9}"
     fi
 fi
 
@@ -441,7 +471,7 @@ if param base_only; then
 else
     if [ "$EXTRAMOD" ]; then
 	for folder in $EXTRAMOD; do
-	    echo $i"поиск дополнительных модулей в $folder"
+	    echo $i"${loc_extramod} $folder"
 	    locate -d $folder && { find /mnt/$DEV/$LPTH -name "*.$xzm" 2>/dev/null | egrep -v "$NOLOAD" | sort >>/tmp/modules; } || fail $folder
 	done
     fi
@@ -456,7 +486,7 @@ fi
 
 # Копирование данных в RAM:
 if param copy2ram; then
-    echo $i"копирование модулей .pfs .xzm в память (copy2ram), ждите..."
+    echo $i"${loc_copy2ram2}"
     [ $RAMMOD ] && { egrep "$RAMMOD" /tmp/modules > /tmp/rammod; cpmod /tmp/rammod; } || cpmod /tmp/modules
 fi
 
@@ -467,14 +497,14 @@ if [ -f "$cro" ] ;then
 	    #if echo "$cro" | egrep ".luks$"; then
 		for x in dm_crypt cryptd cbc sha256_generic aes_generic aes_x86_64; do modprobe $x 2>/dev/null; done
 		losetup /dev/loop2 "$cro"
-		echo $i"Найден зашифрованный файл сохранения RO (только чтение)."
-		echo $i"Введите пароль для `basename "$cro"`."
+		echo $i"${loc_crypt1}"
+		echo $i"${loc_crypt2} `basename "$cro"`."
 		/opt/000-kernel/sbin/cryptsetup luksOpen /dev/loop2 crypt
 		fsck_dat /dev/mapper/crypt && crofsck=c || fail "$cro"
 		debug
 		#mount /dev/mapper/crypt /memory/changes 2>/dev/null && touch /memory/changes/._test1 2>/dev/null
 	    else
-		echo $i"Найден файл сохранения RO (только чтение) `basename "$cro"`."
+		echo $i"${loc_crypt3} `basename "$cro"`."
 		mkdir /memory/savero && mount -o loop "$cro" /memory/savero && fsck_dat /$DEV/$LPTH && crofsck=1 || fail "$cro"
 		debug
 		#mount -o loop /mnt/$DEV/$LPTH /memory/changes 2>/dev/null && touch /memory/changes/._test1 2>/dev/null
